@@ -49,6 +49,9 @@ class AstroidManager(object):
     def __init__(self):
         self.__dict__ = AstroidManager.brain
         if not self.__dict__:
+            # NOTE: cache entries are added by the [re]builder
+            self.astroid_cache = {}
+            self._mod_file_cache = {}
             self._failed_import_hooks = []
             self.always_load_extensions = False
             self.optimize_ast = False
@@ -76,6 +79,8 @@ class AstroidManager(object):
                 modname = '.'.join(modutils.modpath_from_file(filepath))
             except ImportError:
                 modname = filepath
+        if modname in self.astroid_cache and self.astroid_cache[modname].file == filepath:
+            return self.astroid_cache[modname]
         if source:
             from astroid.builder import AstroidBuilder
             return AstroidBuilder(self).file_build(filepath, modname)
@@ -105,6 +110,8 @@ class AstroidManager(object):
     @lru_cache(maxsize=1024)
     def ast_from_module_name(self, modname, context_file=None):
         """given a module name, return the astroid object"""
+        if modname in self.astroid_cache:
+            return self.astroid_cache[modname]
         if modname == '__main__':
             return self._build_stub_module(modname)
         old_cwd = os.getcwd()
@@ -122,8 +129,8 @@ class AstroidManager(object):
             elif found_spec.type in (spec.ModuleType.C_BUILTIN,
                                      spec.ModuleType.C_EXTENSION):
                 # pylint: disable=no-member
-                if (found_spec.type == spec.ModuleType.C_EXTENSION and
-                        not self._can_load_extension(modname)):
+                if (found_spec.type == spec.ModuleType.C_EXTENSION
+                        and not self._can_load_extension(modname)):
                     return self._build_stub_module(modname)
                 try:
                     module = modutils.load_module_from_name(modname)
@@ -188,22 +195,30 @@ class AstroidManager(object):
     @lru_cache(maxsize=1024)
     def file_from_module_name(self, modname, contextfile):
         try:
-            value = modutils.file_info_from_modpath(
-                modname.split('.'), context_file=contextfile)
+            value = self._mod_file_cache[(modname, contextfile)]
             traceback = sys.exc_info()[2]
-        except ImportError as ex:
-            value = exceptions.AstroidImportError(
-                'Failed to import module {modname} with error:\n{error}.',
-                modname=modname, error=ex)
-            traceback = sys.exc_info()[2]
+        except KeyError:
+            try:
+                value = modutils.file_info_from_modpath(
+                    modname.split('.'), context_file=contextfile)
+                traceback = sys.exc_info()[2]
+            except ImportError as ex:
+                value = exceptions.AstroidImportError(
+                    'Failed to import module {modname} with error:\n{error}.',
+                    modname=modname, error=ex)
+                traceback = sys.exc_info()[2]
+            self._mod_file_cache[(modname, contextfile)] = value
         if isinstance(value, exceptions.AstroidBuildingError):
-            six.reraise(exceptions.AstroidBuildingError, value, traceback)
+            six.reraise(exceptions.AstroidBuildingError,
+                        value, traceback)
         return value
 
     @lru_cache(maxsize=1024)
     def ast_from_module(self, module, modname=None):
         """given an imported module, return the astroid object"""
         modname = modname or module.__name__
+        if modname in self.astroid_cache:
+            return self.astroid_cache[modname]
         try:
             # some builtin modules don't have __file__ attribute
             filepath = module.__file__
@@ -271,8 +286,13 @@ class AstroidManager(object):
         """
         self._failed_import_hooks.append(hook)
 
+    def cache_module(self, module):
+        """Cache a module if no module with the same name is known yet."""
+        self.astroid_cache.setdefault(module.name, module)
+
     def clear_cache(self, astroid_builtin=None):
         # XXX clear transforms
+        self.astroid_cache.clear()
         self.ast_from_file.cache_clear()
         self.ast_from_module_name.cache_clear()
         self.file_from_module_name.cache_clear()
