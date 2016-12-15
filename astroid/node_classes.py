@@ -18,6 +18,13 @@ try:
 except ImportError:
     from singledispatch import singledispatch as _singledispatch
 
+
+try:
+    from functools import lru_cache
+except ImportError:
+    from backports.functools_lru_cache import lru_cache
+
+
 import six
 
 from astroid import as_string
@@ -292,17 +299,21 @@ class NodeNG(object):
         func = getattr(visitor, "visit_" + self.__class__.__name__.lower())
         return func(self)
 
+    @lru_cache(maxsize=1024)
     def get_children(self):
+        result = []
         for field in self._astroid_fields:
             attr = getattr(self, field)
             if attr is None:
                 continue
             if isinstance(attr, (list, tuple)):
                 for elt in attr:
-                    yield elt
+                    result.append(elt)
             else:
-                yield attr
+                result.append(attr)
+        return result
 
+    @lru_cache(maxsize=1024)
     def last_child(self):
         """an optimized version of list(get_children())[-1]"""
         for field in self._astroid_fields[::-1]:
@@ -430,6 +441,7 @@ class NodeNG(object):
         assert self.fromlineno is not None, self
         assert self.tolineno is not None, self
 
+    @lru_cache(maxsize=1024)
     def _fixed_source_line(self):
         """return the line number where the given node appears
 
@@ -439,8 +451,9 @@ class NodeNG(object):
         line = self.lineno
         _node = self
         try:
+            iterator = iter(_node.get_children())
             while line is None:
-                _node = next(_node.get_children())
+                _node = next(iterator)
                 line = _node.lineno
         except StopIteration:
             _node = self.parent
@@ -973,11 +986,11 @@ class Arguments(mixins.AssignTypeMixin, NodeNG):
             return _find_arg(argname, self.args, rec)
         return None, None
 
+    @lru_cache(maxsize=1024)
     def get_children(self):
         """override get_children to skip over None elements in kw_defaults"""
-        for child in super(Arguments, self).get_children():
-            if child is not None:
-                yield child
+        return [child for child in super(Arguments, self).get_children()
+                if child is not None]
 
 
 def _find_arg(argname, args, rec=False):
@@ -1178,12 +1191,16 @@ class Compare(NodeNG):
         self.left = left
         self.ops = ops
 
+    @lru_cache(maxsize=1028)
     def get_children(self):
         """override get_children for tuple fields"""
-        yield self.left
+        res = []
+        res.append(self.left)
         for _, comparator in self.ops:
-            yield comparator # we don't want the 'op'
+            res.append(comparator) # we don't want the 'op'
+        return res
 
+    @lru_cache(maxsize=1028)
     def last_child(self):
         """override last_child"""
         # XXX maybe if self.ops:
@@ -1352,12 +1369,15 @@ class Dict(NodeNG, bases.Instance):
     def pytype(self):
         return '%s.dict' % BUILTINS
 
+    @lru_cache(maxsize=1024)
     def get_children(self):
         """get children of a Dict node"""
         # overrides get_children
+        res = []
         for key, value in self.items:
-            yield key
-            yield value
+            res.append(key)
+            res.append(value)
+        return res
 
     def last_child(self):
         """override last_child"""
@@ -1907,13 +1927,16 @@ class With(mixins.BlockRangeMixIn, mixins.AssignTypeMixin, Statement):
     def blockstart_tolineno(self):
         return self.items[-1][0].tolineno
 
+    @lru_cache(maxsize=1024)
     def get_children(self):
+        res = []
         for expr, var in self.items:
-            yield expr
+            res.append(expr)
             if var:
-                yield var
+                res.append(var)
         for elt in self.body:
-            yield elt
+            res.append(elt)
+        return res
 
 
 class AsyncWith(With):

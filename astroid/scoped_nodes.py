@@ -30,6 +30,10 @@ from astroid import mixins
 from astroid import node_classes
 from astroid import util
 
+try:
+    from functools import lru_cache
+except ImportError:
+    from backports.functools_lru_cache import lru_cache
 
 BUILTINS = six.moves.builtins.__name__
 ITER_METHODS = ('__iter__', '__getitem__')
@@ -330,6 +334,7 @@ class Module(LocalsDictNodeNG):
     def display_type(self):
         return 'Module'
 
+    @lru_cache(maxsize=10000)
     def getattr(self, name, context=None, ignore_locals=False):
         result = []
         name_in_locals = name in self.locals
